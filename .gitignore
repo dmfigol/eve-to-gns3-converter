@@ -110,3 +110,4 @@ dst/
 .idea/
 *.cfg
 notes.txt
+.DS_Store

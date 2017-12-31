@@ -9,6 +9,7 @@ import copy
 
 import json_templates
 from node import Node, Network
+from drawing import Drawing
 
 
 class Topology(object):
@@ -19,17 +20,21 @@ class Topology(object):
         self.uuid = uuid.uuid4()
         self.eve_xml = eve_xml
         self.args = args
+        self.console_start_port = args.console_start_port
         self.gns_canvas_size = (0, 0)
 
         self.parsed_eve_xml = xmltodict.parse(eve_xml)
+        self.name = self.parsed_eve_xml['lab']['@name']
+
         self.links = []
+        self.text_objects = []
         self.id_to_network = {}
         self.id_to_node = {}
 
         self.parse_xml()
 
-        self.get_gns_canvas_size()
-        self.set_gns3_coordinates()
+        self.calculate_gns_canvas_size()
+        # self.set_gns3_coordinates()
 
         self.create_links_from_networks()
 
@@ -91,10 +96,22 @@ class Topology(object):
             node = self.id_to_node[eve_node_id]
             node.config = config
 
+    def parse_text_objects(self):
+        """
+        TODO:
+        Returns:
+
+        """
+        text_objects_dict = self.parsed_eve_xml['lab']['objects'][0]['textobjects']['textobject']
+        for text_object_dict in text_objects_dict:
+            eve_html = base64.b64decode(text_object_dict['data'])
+            self.text_objects.append(Drawing(eve_html=eve_html, topology=self))
+
     def parse_xml(self):
         self.parse_networks()
         self.parse_nodes()
         self.parse_configs()
+        self.parse_text_objects()
         self.create_links_from_networks()
 
     def write_configs(self):
@@ -110,7 +127,7 @@ class Topology(object):
         for node in self.nodes:
             node.write_config_to_dir(config_dir_path)
 
-    def get_gns_canvas_size(self):
+    def calculate_gns_canvas_size(self):
         """
         TODO:
         Calculates GNS3 canvas size based on the location of nodes in EVE topology
@@ -118,9 +135,6 @@ class Topology(object):
         Args:
             nodes: list of Node objects
 
-        Returns:
-            int - canvas width
-            int - canvas height
         """
         max_x = max(node.eve_x for node in self.nodes)
         max_y = max(node.eve_y for node in self.nodes)
@@ -130,54 +144,36 @@ class Topology(object):
             math.ceil((max_y * self.GNS_CANVAS_SCALE + self.GNS_OFFSET) / 500) * 500
         )
 
-    def set_gns3_coordinates(self):
-        """
-
-        Returns:
-
-        """
-        for node in self.nodes:
-            node.set_gns_coordinates(self.gns_canvas_size, self.GNS_CANVAS_SCALE)
+    def calculate_gns3_coordinates(self, eve_coordinates):
+        eve_x, eve_y = eve_coordinates
+        gns_x = int(eve_x) * self.GNS_CANVAS_SCALE - self.gns_canvas_size[0] // 2
+        gns_y = int(eve_y) * self.GNS_CANVAS_SCALE - self.gns_canvas_size[1] // 2
+        return gns_x, gns_y
 
     def create_links_from_networks(self):
         for network in self.networks:
             network.convert_to_links()
 
     def build_gns_topology_json(self):
-        result = {'topology': {}}
-        links_json = []
-        for link in self.links:
-            first_adapter_number, first_port_number = link.first_interface.get_adapter_port_number()
-            second_adapter_number, second_port_number = link.second_interface.get_adapter_port_number()
-            link_json = copy.deepcopy(json_templates.LINK_JSON_TEMPLATE)
-            link_json['link_id'] = str(link.uuid)
-            first_interface_json = link_json['nodes'][0]
-            second_interface_json = link_json['nodes'][1]
-            first_interface_json['adapter_number'] = first_adapter_number
-            first_interface_json['node_id'] = str(link.first_interface.node.uuid)
-            first_interface_json['port_number'] = first_port_number
-            first_interface_json['label']['text'] = link.first_interface.eve_name
+        result = copy.deepcopy(json_templates.GENERAL_INFO_JSON_TEMPLATE)
+        result['topology'] = {'computes': []}
+        result['topology']['links'] = [link.build_gns_topology_json() for link in self.links]
+        result['topology']['nodes'] = [node.build_gns_topology_json() for node in self.nodes]
+        result['topology']['drawings'] = [drawing.build_gns_topology_json() for drawing in self.text_objects]
 
-            second_interface_json['adapter_number'] = second_adapter_number
-            second_interface_json['node_id'] = str(link.second_interface.node.uuid)
-            second_interface_json['port_number'] = second_port_number
-            second_interface_json['label']['text'] = link.second_interface.eve_name
+        result['project_id'] = str(self.uuid)
+        result['name'] = self.name
+        result['scene_width'] = self.gns_canvas_size[0]
+        result['scene_height'] = self.gns_canvas_size[1]
 
-            links_json.append(link_json)
-        result['topology']['links'] = links_json
+        return json.dumps(result, indent=4, sort_keys=True)
 
-        # "nodes": [
-        #     {
-        #         "adapter_number": {first_adapter_number},
-        #         "label": {
-        #             "rotation": 0,
-        #             "style": "font-family: TypeWriter;font-size: 10;font-weight: bold;fill: #000000;fill-opacity: 1.0;",
-        #             "text": "{first_interface_name}",
-        #             "x": -2,
-        #             "y": 2
-        #         },
-        #         "node_id": "{first_node_id}",
-        #         "port_number": {first_port_number}
-        #     },
-        return json.dumps(result, indent=4)
+    def write_gns_topology_json(self):
+        result = self.build_gns_topology_json()
+        gns_topology_filename = f'{self.name}.gns3'
+        gns_topology_file_path = os.path.join(self.args.dst_dir, gns_topology_filename)
 
+        with open(gns_topology_file_path, 'w') as f:
+            f.write(result)
+
+        print(f'Successfully written topology file at {gns_topology_file_path}')

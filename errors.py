@@ -4,7 +4,3 @@ class MissingInterface(Exception):
 
 class InvalidLink(Exception):
     pass
-
-
-class NotImplemented(Exception):
-    pass

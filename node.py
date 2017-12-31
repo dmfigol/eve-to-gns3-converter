@@ -2,28 +2,41 @@ import collections
 import os
 import uuid
 import re
+import copy
+import math
 
 import errors
+import json_templates
 
 IOL_INTERFACE_NAME_RE = re.compile(r'(?P<base_name>[a-zA-Z]+)(?P<adapter_number>\d+)/(?P<port_number>\d+)')
+
 
 class Node(object):
     """
     TODO
     """
+    L2_IOL_LABEL_COORDINATES = (-4, 46)
+    L3_IOL_LABEL_COORDINATES = (8, 46)
+    DEFAULT_LABEL_COORDINATES = (5, -25)
+    SWITCH_SYMBOL_SIZE = (51, 48)
+    ROUTER_SYMBOL_SIZE = (66, 45)
+
     def __init__(self, eve_node_id, name=None, node_type=None,
-                 image=None, eve_icon=None, eve_x=None, eve_y=None,
+                 image_path=None, eve_icon=None, eve_x=None, eve_y=None,
+                 ethernet_adapters_number=0, serial_adapters_number=0,
                  interfaces_dict=None, topology=None):
         self.uuid = uuid.uuid4()
         self.eve_node_id = eve_node_id
         self.name = name
         self.node_type = node_type
-        self.image = image
+        self.image_path = image_path
         self.eve_icon = eve_icon
         self.eve_x = eve_x
         self.eve_y = eve_y
-        self.gns_x = 0
-        self.gns_y = 0
+
+        self.serial_adapters_number = serial_adapters_number
+        self.ethernet_adapters_number = ethernet_adapters_number
+
         self.interfaces = []
         self.id_to_interface = {}
 
@@ -82,10 +95,12 @@ class Node(object):
         params['name'] = node_dict['@name']
         params['eve_node_id'] = node_dict['@id']
         params['node_type'] = node_dict['@type']  # IOL, QEMU, dynamips?
-        params['image'] = node_dict['@image']
+        params['image_path'] = node_dict['@image']
         params['eve_icon'] = node_dict['@icon']
         params['eve_x'] = int(node_dict['@left'])
         params['eve_y'] = int(node_dict['@top'])
+        params['ethernet_adapters_number'] = int(node_dict['@ethernet'])
+        params['serial_adapters_number'] = int(node_dict['@serial'])
         return params
 
     @property
@@ -225,20 +240,47 @@ class Node(object):
         self.interfaces.append(interface)
         return interface
 
-    def set_gns_coordinates(self, gns_canvas_size, gns_canvas_scale):
-        """
-        TODO
-        Calculates coodinates of objects in GNS3 based on coordinates in EVE
+    @property
+    def gns_coordinates(self):
+        return self.topology.calculate_gns3_coordinates((self.eve_x, self.eve_y))
 
-        Args:
-            gns_canvas_size: tuple, contains width and height of GNS3 canvas
+    @property
+    def gns_image(self):
+        if self.node_type == 'iol' and self.role == 'switch' and self.topology.args.l2_iol_image:
+            return self.topology.args.l2_iol_image
+        elif self.node_type == 'iol' and self.role == 'router' and self.topology.args.l3_iol_image:
+            return self.topology.args.l3_iol_image
+        else:
+            return self.image_path
 
-        Returns:
-            tuple - integer coordinates in GNS3
-        """
-        gns_canvas_width, gns_canvas_height = gns_canvas_size
-        self.gns_x = int(self.eve_x) * gns_canvas_scale - gns_canvas_width // 2
-        self.gns_y = int(self.eve_y) * gns_canvas_scale - gns_canvas_height // 2
+    @property
+    def gns_label_coordinates(self):
+        if self.node_type == 'iol' and self.role == 'switch':
+            return self.L2_IOL_LABEL_COORDINATES
+        elif self.node_type == 'iol' and self.role == 'router':
+            return self.L3_IOL_LABEL_COORDINATES
+        else:
+            return self.DEFAULT_LABEL_COORDINATES
+
+    @property
+    def symbol(self):
+        if self.role == 'switch':
+            return ':/symbols/multilayer_switch.svg'
+        elif self.role == 'router':
+            return ':/symbols/router.svg'
+
+    @property
+    def symbol_size(self):
+        if self.role == 'switch':
+            return self.SWITCH_SYMBOL_SIZE
+        elif self.role == 'router':
+            return self.ROUTER_SYMBOL_SIZE
+
+    @property
+    def symbol_center_coordinates(self):
+        gns_x, gns_y = self.gns_coordinates
+        symbol_width, symbol_height = self.symbol_size
+        return gns_x + symbol_width / 2, gns_y + symbol_height
 
     def write_config_to_dir(self, dst_dir):
         """
@@ -255,6 +297,30 @@ class Node(object):
         with open(path, 'wb') as f:
             f.write(self.config)
 
+    def build_gns_topology_json(self):
+        if self.node_type == 'iol':
+            node_json = copy.deepcopy(json_templates.IOL_JSON_TEMPLATE)
+        else:
+            raise NotImplementedError("There is no template for the node type {self.node_type}")
+
+        node_json['console'] = self.topology.console_start_port + int(self.eve_node_id)
+        node_json['label']['text'] = self.name
+        node_json['name'] = self.name
+        node_json['node_id'] = str(self.uuid)
+        node_json['properties']['ethernet_adapters'] = self.ethernet_adapters_number
+        node_json['properties']['serial_adapters'] = self.serial_adapters_number
+        node_json['properties']['path'] = self.gns_image
+        node_json['symbol'] = self.symbol
+
+        gns_x, gns_y = self.gns_coordinates
+        node_json['x'] = gns_x
+        node_json['y'] = gns_y
+
+        gns_label_x, gns_label_y = self.gns_label_coordinates
+        node_json['label']['x'] = gns_label_x
+        node_json['label']['y'] = gns_label_y
+
+        return node_json
 
 
 class Network(object):
@@ -275,7 +341,7 @@ class Network(object):
             link = Link(interfaces=self.interfaces)
             self.topology.links.append(link)
         else:
-            raise errors.NotImplemented("This is not implemented, refer to issue #1 on the github")
+            raise NotImplementedError("This is not implemented, refer to issue #1 on the github")
 
     def is_point_to_point(self):
         """
@@ -314,12 +380,84 @@ class Link(object):
     def second_interface(self):
         return self.interfaces[1]
 
+    @property
+    def angle(self):
+        node_center_x1, node_center_y1 = self.first_interface.node.symbol_center_coordinates
+        node_center_x2, node_center_y2 = self.second_interface.node.symbol_center_coordinates
+        return math.degrees(
+            math.atan2(node_center_y2 - node_center_y1, node_center_x2 - node_center_x1)
+        )
+
+    @staticmethod
+    def get_label_rotation(rotation):
+        if math.fabs(rotation) > 90:
+            if rotation > 0:
+                return rotation - 180
+            else:
+                return rotation + 180
+        return rotation
+
+    def get_label_coordinates(self):
+        node_center_x1, node_center_y1 = self.first_interface.node.symbol_center_coordinates
+        node_center_x2, node_center_y2 = self.second_interface.node.symbol_center_coordinates
+        try:
+            m = (node_center_y2 - node_center_y1) / (node_center_x2 - node_center_x1)
+
+            def get_label_y(x):
+                return m * (x - node_center_x1) + node_center_y1
+
+            node_label_x1 = node_center_x1 + (node_center_x2 - node_center_x1) * 0.1
+            node_label_x2 = node_center_x2 - (node_center_x2 - node_center_x1) * 0.1
+
+            node_label_y1 = get_label_y(node_label_x1)
+            node_label_y2 = get_label_y(node_label_x2)
+
+        except ZeroDivisionError:
+            node_label_x1 = node_label_x2 = node_center_x2
+            node_label_y1 = node_center_y1 + (node_center_y2 - node_center_y1) * 0.1
+            node_label_y2 = node_center_y2 - (node_center_y2 - node_center_y1) * 0.1
+
+        node_x1, node_y1 = self.first_interface.node.gns_coordinates
+        node_x2, node_y2 = self.second_interface.node.gns_coordinates
+        first_node_label_coordinates = (int(node_label_x1 - node_x1), int(node_label_y1 - node_y1))
+        second_node_label_coordinates = (int(node_label_x2 - node_x2), int(node_label_y2 - node_y2))
+
+        return [first_node_label_coordinates, second_node_label_coordinates]
+
     def __repr__(self):
         return f'Link(interfaces={self.interfaces})'
 
     def __str__(self):
         return (f'{self.first_interface.node.name} {self.first_interface.eve_name} <--> '
                 f'{self.second_interface.node.name} {self.second_interface.eve_name}')
+
+    def build_gns_topology_json(self):
+
+        link_json = copy.deepcopy(json_templates.LINK_JSON_TEMPLATE)
+        link_json['link_id'] = str(self.uuid)
+        link_json['nodes'] = []
+
+        angle = self.angle
+        label_rotation = self.get_label_rotation(angle)
+        label_coordinates = self.get_label_coordinates()
+        for i, interface in enumerate(self.interfaces):
+            node = interface.node
+            link_node_json = copy.deepcopy(json_templates.LINK_NODE_JSON_TEMPLATE)
+            adapter_number, port_number = interface.get_adapter_port_number()
+
+            link_node_json['adapter_number'] = adapter_number
+            link_node_json['port_number'] = port_number
+            link_node_json['node_id'] = str(node.uuid)
+            link_node_json['label']['text'] = interface.eve_name
+            link_node_json['label']['rotation'] = int(label_rotation)
+            link_node_json['label']['x'] = label_coordinates[i][0]
+            link_node_json['label']['y'] = label_coordinates[i][1]
+
+            link_json['nodes'].append(link_node_json)
+
+        # print(f'{self.first_interface.node.name} <> {self.second_interface.node.name}: {label_rotation}')
+
+        return link_json
 
 
 class Interface(object):
@@ -341,6 +479,6 @@ class Interface(object):
     def get_adapter_port_number(self):
         if self.node.node_type == 'iol':
             parsed_values = IOL_INTERFACE_NAME_RE.match(self.eve_name).groupdict()
-            return parsed_values['adapter_number'], parsed_values['port_number']
+            return int(parsed_values['adapter_number']), int(parsed_values['port_number'])
         else:
-            raise NotImplemented('This method is valid only for IOL devices')
+            raise NotImplementedError('This method is valid only for IOL devices')
