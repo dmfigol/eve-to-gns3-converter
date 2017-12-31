@@ -5,8 +5,9 @@ import re
 import copy
 import math
 
-import errors
+import exceptions
 import json_templates
+from connections import Link
 
 IOL_INTERFACE_NAME_RE = re.compile(r'(?P<base_name>[a-zA-Z]+)(?P<adapter_number>\d+)/(?P<port_number>\d+)')
 
@@ -37,6 +38,8 @@ class Node(object):
         self.serial_adapters_number = serial_adapters_number
         self.ethernet_adapters_number = ethernet_adapters_number
 
+        self.config = None
+
         self.interfaces = []
         self.id_to_interface = {}
 
@@ -64,7 +67,10 @@ class Node(object):
             node_dict = {'@name': 'R1', '@eve_node_id': '123'}
             node = Node.from_dict(node_dict, {}, {})
         """
-        params = cls.parse_node_dict(node_dict)
+        params = cls.parse_node_dict(
+            node_dict,
+            (topology.GNS_DEFAULT_SCENE_WIDTH, topology.GNS_DEFAULT_SCENE_HEIGHT)
+        )
         node = topology.id_to_node.get(params['eve_node_id'])
         params['topology'] = topology
         interfaces_dict = node_dict.get('interface', [])
@@ -81,7 +87,7 @@ class Node(object):
             return node
 
     @staticmethod
-    def parse_node_dict(node_dict):
+    def parse_node_dict(node_dict, gns_default_canvas_size):
         """
         Parses dictionary from xmltodict and returns a new dictionary with different variable names
 
@@ -97,8 +103,18 @@ class Node(object):
         params['node_type'] = node_dict['@type']  # IOL, QEMU, dynamips?
         params['image_path'] = node_dict['@image']
         params['eve_icon'] = node_dict['@icon']
-        params['eve_x'] = int(node_dict['@left'])
-        params['eve_y'] = int(node_dict['@top'])
+        eve_x = node_dict['@left']
+        if '%' in eve_x:
+            params['eve_x'] = gns_default_canvas_size[0] * int(eve_x.strip('%')) / 100
+        else:
+            params['eve_x'] = int(eve_x)
+
+        eve_y = node_dict['@top']
+        if '%' in eve_y:
+            params['eve_y'] = gns_default_canvas_size[1] * int(eve_y.strip('%')) / 100
+        else:
+            params['eve_y'] = int(eve_y)
+
         params['ethernet_adapters_number'] = int(node_dict['@ethernet'])
         params['serial_adapters_number'] = int(node_dict['@serial'])
         return params
@@ -137,7 +153,7 @@ class Node(object):
             try:
                 interface = self.get_interface(eve_interface_id)
                 interface.eve_name = eve_interface_name
-            except errors.MissingInterface:
+            except exceptions.MissingInterface:
                 if link_type == 'ethernet':
                     eve_network_id = int_dict['@network_id']
                     eve_network = self.topology.id_to_network.get(eve_network_id)
@@ -155,7 +171,7 @@ class Node(object):
                         remote_node = Node(eve_node_id=eve_remote_node_id, topology=self.topology)
                     try:
                         remote_interface = remote_node.get_interface(eve_remote_interface_id)
-                    except errors.MissingInterface:
+                    except exceptions.MissingInterface:
                         remote_interface = remote_node.create_interface(
                             eve_interface_id=eve_remote_interface_id,
                             remote_node=self
@@ -187,6 +203,7 @@ class Node(object):
             for interface_dict in interfaces_dict:
                 parse_interface_dict(interface_dict)
         else:
+            raise NotImplementedError("blabla")
             parse_interface_dict(interfaces_dict)
 
     def get_interface(self, interface_id):
@@ -205,7 +222,7 @@ class Node(object):
         try:
             return self.id_to_interface[interface_id]
         except KeyError:
-            raise errors.MissingInterface(
+            raise exceptions.MissingInterface(
                 f'Interface with id {interface_id} does not exist on node with id {self.eve_node_id}'
             )
 
@@ -292,10 +309,11 @@ class Node(object):
         Returns:
             None
         """
-        filename = f'{self.name}_startup-config.cfg'
-        path = os.path.join(dst_dir, filename)
-        with open(path, 'wb') as f:
-            f.write(self.config)
+        if self.config:
+            filename = f'{self.name}_startup-config.cfg'
+            path = os.path.join(dst_dir, filename)
+            with open(path, 'wb') as f:
+                f.write(self.config)
 
     def build_gns_topology_json(self):
         if self.node_type == 'iol':
@@ -323,141 +341,7 @@ class Node(object):
         return node_json
 
 
-class Network(object):
-    def __init__(self, eve_network_id, topology=None):
-        self.eve_network_id = eve_network_id
-        self.topology = topology
-        self.interfaces = []
 
-    def convert_to_links(self):
-        """
-        Creates Link objects from Network objects
-
-        Modifies:
-            self.topology object by adding a new link into self.topology.links
-
-        """
-        if self.is_point_to_point():
-            link = Link(interfaces=self.interfaces)
-            self.topology.links.append(link)
-        else:
-            raise NotImplementedError("This is not implemented, refer to issue #1 on the github")
-
-    def is_point_to_point(self):
-        """
-        Checks if only two interfaces are connected to the Network object
-
-        Returns:
-            boolean - True only if two interfaces are the part of Network object
-        """
-        if len(self.interfaces) == 2:
-            return True
-        return False
-
-    def __repr__(self):
-        return f'Network(eve_network_id={self.eve_network_id})'
-
-
-class Link(object):
-    def __init__(self, interfaces=None):
-        self.uuid = uuid.uuid4()
-        if interfaces is None:
-            self.interfaces = []
-        else:
-            self.interfaces = list(interfaces)
-
-    def add_interface(self, interface):
-        if len(self.interfaces) < 2:
-            self.interfaces.append(interface)
-        else:
-            raise errors.InvalidLink("A link can't connect more than two interfaces")
-
-    @property
-    def first_interface(self):
-        return self.interfaces[0]
-
-    @property
-    def second_interface(self):
-        return self.interfaces[1]
-
-    @property
-    def angle(self):
-        node_center_x1, node_center_y1 = self.first_interface.node.symbol_center_coordinates
-        node_center_x2, node_center_y2 = self.second_interface.node.symbol_center_coordinates
-        return math.degrees(
-            math.atan2(node_center_y2 - node_center_y1, node_center_x2 - node_center_x1)
-        )
-
-    @staticmethod
-    def get_label_rotation(rotation):
-        if math.fabs(rotation) > 90:
-            if rotation > 0:
-                return rotation - 180
-            else:
-                return rotation + 180
-        return rotation
-
-    def get_label_coordinates(self):
-        node_center_x1, node_center_y1 = self.first_interface.node.symbol_center_coordinates
-        node_center_x2, node_center_y2 = self.second_interface.node.symbol_center_coordinates
-        try:
-            m = (node_center_y2 - node_center_y1) / (node_center_x2 - node_center_x1)
-
-            def get_label_y(x):
-                return m * (x - node_center_x1) + node_center_y1
-
-            node_label_x1 = node_center_x1 + (node_center_x2 - node_center_x1) * 0.1
-            node_label_x2 = node_center_x2 - (node_center_x2 - node_center_x1) * 0.1
-
-            node_label_y1 = get_label_y(node_label_x1)
-            node_label_y2 = get_label_y(node_label_x2)
-
-        except ZeroDivisionError:
-            node_label_x1 = node_label_x2 = node_center_x2
-            node_label_y1 = node_center_y1 + (node_center_y2 - node_center_y1) * 0.1
-            node_label_y2 = node_center_y2 - (node_center_y2 - node_center_y1) * 0.1
-
-        node_x1, node_y1 = self.first_interface.node.gns_coordinates
-        node_x2, node_y2 = self.second_interface.node.gns_coordinates
-        first_node_label_coordinates = (int(node_label_x1 - node_x1), int(node_label_y1 - node_y1))
-        second_node_label_coordinates = (int(node_label_x2 - node_x2), int(node_label_y2 - node_y2))
-
-        return [first_node_label_coordinates, second_node_label_coordinates]
-
-    def __repr__(self):
-        return f'Link(interfaces={self.interfaces})'
-
-    def __str__(self):
-        return (f'{self.first_interface.node.name} {self.first_interface.eve_name} <--> '
-                f'{self.second_interface.node.name} {self.second_interface.eve_name}')
-
-    def build_gns_topology_json(self):
-
-        link_json = copy.deepcopy(json_templates.LINK_JSON_TEMPLATE)
-        link_json['link_id'] = str(self.uuid)
-        link_json['nodes'] = []
-
-        angle = self.angle
-        label_rotation = self.get_label_rotation(angle)
-        label_coordinates = self.get_label_coordinates()
-        for i, interface in enumerate(self.interfaces):
-            node = interface.node
-            link_node_json = copy.deepcopy(json_templates.LINK_NODE_JSON_TEMPLATE)
-            adapter_number, port_number = interface.get_adapter_port_number()
-
-            link_node_json['adapter_number'] = adapter_number
-            link_node_json['port_number'] = port_number
-            link_node_json['node_id'] = str(node.uuid)
-            link_node_json['label']['text'] = interface.eve_name
-            link_node_json['label']['rotation'] = int(label_rotation)
-            link_node_json['label']['x'] = label_coordinates[i][0]
-            link_node_json['label']['y'] = label_coordinates[i][1]
-
-            link_json['nodes'].append(link_node_json)
-
-        # print(f'{self.first_interface.node.name} <> {self.second_interface.node.name}: {label_rotation}')
-
-        return link_json
 
 
 class Interface(object):
