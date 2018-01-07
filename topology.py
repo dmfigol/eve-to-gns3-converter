@@ -12,20 +12,26 @@ import json_templates
 from node import Node
 from drawing import Drawing
 from connections import Network
+from helper import Size
 
 
 class Topology(object):
-    GNS_CANVAS_SCALE = 1
-    GNS_OFFSET = 200
-    GNS_DEFAULT_SCENE_WIDTH = 2000
-    GNS_DEFAULT_SCENE_HEIGHT = 1000
+    """The class which represents a topology with nodes and links.
+
+    Attributes:
+        GNS_SCENE_SCALE (int): constant, scale factor when translating coordinates from EVE to GNS3
+        uuid (uuid
+    """
+    GNS_SCENE_SCALE = 1
+    GNS_SCENE_OFFSET = 200
+    GNS_DEFAULT_SCENE_SIZE = Size(2000, 1000)
 
     def __init__(self, eve_xml=None, args=None, dst_dir=None):
         self.uuid = uuid.uuid4()
         self.eve_xml = eve_xml
         self.args = args
         self.console_start_port = args.console_start_port
-        self.gns_canvas_size = None
+        self.gns_scene_size = None
         self.dst_dir = dst_dir
 
         self.parsed_eve_xml = xmltodict.parse(eve_xml, force_list={'network', 'interface'})
@@ -139,26 +145,22 @@ class Topology(object):
         TODO:
         Calculates GNS3 canvas size based on the location of nodes in EVE topology
 
-        Args:
-            nodes: list of Node objects
-
         """
-        max_x = max(node.eve_x for node in self.nodes)
-        max_y = max(node.eve_y for node in self.nodes)
-        # print(f'max x coordinate: {max_x}, max y coordinate: {max_y}')
-        width = math.ceil((max_x * self.GNS_CANVAS_SCALE + self.GNS_OFFSET) / 500) * 500
-        height = math.ceil((max_y * self.GNS_CANVAS_SCALE + self.GNS_OFFSET) / 500) * 500
-        if width < self.GNS_DEFAULT_SCENE_WIDTH:
-            width = self.GNS_DEFAULT_SCENE_WIDTH
-        if height < self.GNS_DEFAULT_SCENE_HEIGHT:
-            height = self.GNS_DEFAULT_SCENE_HEIGHT
-        self.gns_canvas_size = (width, height)
+        max_x = max(node.eve_coordinates.x for node in self.nodes)
+        max_y = max(node.eve_coordinates.y for node in self.nodes)
+        width = math.ceil((max_x * self.GNS_SCENE_SCALE + self.GNS_SCENE_OFFSET) / 500) * 500
 
-    def calculate_gns3_coordinates(self, eve_coordinates):
-        eve_x, eve_y = eve_coordinates
-        gns_x = int(eve_x) * self.GNS_CANVAS_SCALE - self.gns_canvas_size[0] // 2
-        gns_y = int(eve_y) * self.GNS_CANVAS_SCALE - self.gns_canvas_size[1] // 2
-        return gns_x, gns_y
+        height = math.ceil((max_y * self.GNS_SCENE_SCALE + self.GNS_SCENE_OFFSET) / 500) * 500
+
+        if width < self.GNS_DEFAULT_SCENE_SIZE.width:
+            width = self.GNS_DEFAULT_SCENE_SIZE.width
+        if height < self.GNS_DEFAULT_SCENE_SIZE.height:
+            height = self.GNS_DEFAULT_SCENE_SIZE.height
+
+        self.gns_scene_size = Size(width, height)
+
+    def get_gns_coordinates(self, eve_coordinates):
+        return round(eve_coordinates) * self.GNS_SCENE_SCALE - self.gns_scene_size // 2
 
     def create_links_from_networks(self):
         for network in self.networks:
@@ -173,8 +175,8 @@ class Topology(object):
 
         result['project_id'] = str(self.uuid)
         result['name'] = self.name
-        result['scene_width'] = self.gns_canvas_size[0]
-        result['scene_height'] = self.gns_canvas_size[1]
+        result['scene_width'] = self.gns_scene_size.width
+        result['scene_height'] = self.gns_scene_size.height
 
         return json.dumps(result, indent=4, sort_keys=True)
 

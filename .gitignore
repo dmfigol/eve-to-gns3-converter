@@ -111,3 +111,6 @@ dst/
 *.cfg
 notes.txt
 .DS_Store
+tmp/
+*.zip
+*.tar

@@ -35,9 +35,12 @@ def get_arguments():
     return args
 
 
-def convert_topology(src_topology_file, args, src_dir):
-    path = pathlib.Path(src_dir)
-    dst_dir = args.dst_dir / path.relative_to(*path.parts[:1])
+def convert_topology(src_topology_file, args, src_dir=None):
+    if src_dir is not None:
+        path = pathlib.Path(src_dir)
+        dst_dir = args.dst_dir / path.relative_to(*path.parts[:1])
+    else:
+        dst_dir = args.dst_dir
     topology = Topology(eve_xml=src_topology_file, args=args, dst_dir=dst_dir)
     topology.write_configs()
     topology.write_gns_topology_json()

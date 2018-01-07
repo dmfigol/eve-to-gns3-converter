@@ -8,43 +8,45 @@ import math
 import exceptions
 import json_templates
 from connections import Link
+from helper import Point, Line, Size
 
-IOL_INTERFACE_NAME_RE = re.compile(r'(?P<base_name>[a-zA-Z]+)(?P<adapter_number>\d+)/(?P<port_number>\d+)')
+
+INTERFACE_NAME_RE = re.compile(r'(?P<base_name>[a-zA-Z]+)(?P<adapter_number>\d+)/(?P<port_number>\d+)')
 
 
 class Node(object):
     """
     TODO
+    @DynamicAttrs
     """
-    L2_IOL_LABEL_COORDINATES = (-4, 46)
-    L3_IOL_LABEL_COORDINATES = (8, 46)
-    DEFAULT_LABEL_COORDINATES = (5, -25)
-    SWITCH_SYMBOL_SIZE = (51, 48)
-    ROUTER_SYMBOL_SIZE = (66, 45)
+    L2_IOL_LABEL_COORDINATES = Point(-4, 46)
+    L3_IOL_LABEL_COORDINATES = Point(15, 46)
+    DEFAULT_LABEL_COORDINATES = Point(5, -25)
+    SWITCH_SYMBOL_SIZE = Size(51, 48)
+    ROUTER_SYMBOL_SIZE = Size(66, 45)
 
-    def __init__(self, eve_node_id, name=None, node_type=None,
-                 image_path=None, eve_icon=None, eve_x=None, eve_y=None,
-                 ethernet_adapters_number=0, serial_adapters_number=0,
-                 interfaces_dict=None, topology=None):
+    def __init__(self, interfaces_dict=None, **kwargs):
         self.uuid = uuid.uuid4()
-        self.eve_node_id = eve_node_id
-        self.name = name
-        self.node_type = node_type
-        self.image_path = image_path
-        self.eve_icon = eve_icon
-        self.eve_x = eve_x
-        self.eve_y = eve_y
 
-        self.serial_adapters_number = serial_adapters_number
-        self.ethernet_adapters_number = ethernet_adapters_number
+        for attr_name, attr_value in kwargs.items():
+            setattr(self, attr_name, attr_value)
+
+        # self.eve_node_id = eve_node_id
+        # self.name = name
+        # self.node_type = node_type
+        # self.image_path = image_path
+        # self.eve_icon = eve_icon
+        # self.eve_coordinates = eve_coordinates
+        #
+        # self.serial_adapters_number = serial_adapters_number
+        # self.ethernet_adapters_number = ethernet_adapters_number
 
         self.config = None
-
         self.interfaces = []
         self.id_to_interface = {}
 
-        self.topology = topology
-        self.topology.id_to_node[eve_node_id] = self
+        # self.topology = topology
+        self.topology.id_to_node[self.eve_node_id] = self
 
         if interfaces_dict is not None:
             self.parse_interfaces(interfaces_dict)
@@ -69,7 +71,7 @@ class Node(object):
         """
         params = cls.parse_node_dict(
             node_dict,
-            (topology.GNS_DEFAULT_SCENE_WIDTH, topology.GNS_DEFAULT_SCENE_HEIGHT)
+            topology.GNS_DEFAULT_SCENE_SIZE
         )
         node = topology.id_to_node.get(params['eve_node_id'])
         params['topology'] = topology
@@ -81,13 +83,13 @@ class Node(object):
             return cls(**params)
         else:
             # if node already exists go through each attribute and set it for the existing object
-            for attr, value in params.items():
-                setattr(node, attr, value)
+            for attr_name, attr_value in params.items():
+                setattr(node, attr_name, attr_value)
             node.parse_interfaces(interfaces_dict)
             return node
 
     @staticmethod
-    def parse_node_dict(node_dict, gns_default_canvas_size):
+    def parse_node_dict(node_dict, gns_default_scene_size):
         """
         Parses dictionary from xmltodict and returns a new dictionary with different variable names
 
@@ -100,23 +102,35 @@ class Node(object):
         params = dict()
         params['name'] = node_dict['@name']
         params['eve_node_id'] = node_dict['@id']
-        params['node_type'] = node_dict['@type']  # IOL, QEMU, dynamips?
+        params['node_type'] = node_dict['@type']  # iol, qemu
+        params['template'] = node_dict['@template']  # vios, viosl2, iol
         params['image_path'] = node_dict['@image']
         params['eve_icon'] = node_dict['@icon']
+
         eve_x = node_dict['@left']
         if '%' in eve_x:
-            params['eve_x'] = gns_default_canvas_size[0] * int(eve_x.strip('%')) / 100
+            eve_x = gns_default_scene_size.width * int(eve_x.strip('%')) * 0.01
         else:
-            params['eve_x'] = int(eve_x)
+            eve_x = int(eve_x)
 
         eve_y = node_dict['@top']
         if '%' in eve_y:
-            params['eve_y'] = gns_default_canvas_size[1] * int(eve_y.strip('%')) / 100
+            eve_y = gns_default_scene_size.height * int(eve_y.strip('%')) * 0.01
         else:
-            params['eve_y'] = int(eve_y)
+            eve_y = int(eve_y)
 
-        params['ethernet_adapters_number'] = int(node_dict['@ethernet'])
-        params['serial_adapters_number'] = int(node_dict['@serial'])
+        params['eve_coordinates'] = Point(eve_x, eve_y)
+        if params['node_type'] == 'iol':
+            params['ethernet_adapters_number'] = int(node_dict['@ethernet'])
+            params['serial_adapters_number'] = int(node_dict['@serial'])
+        elif params['node_type'] == 'qemu':
+            params['console_type'] = node_dict['@console']
+            params['cpus'] = int(node_dict['@cpu'])
+            params['ram'] = int(node_dict['@ram'])
+            params['adapters'] = int(node_dict['@ethernet'])
+        else:
+            raise NotImplementedError(f'Parser for the node type {params["node_type"]} is not implemented')
+
         return params
 
     @property
@@ -196,15 +210,8 @@ class Node(object):
                     remote_interface.link = link
                     self.topology.links.append(link)
 
-        # xmltodict will return list if the number of child objects is more than 1 and dictionary otherwise
-        # this checks if interfaces_dict is Sequence.
-        # Note: list is a sequence, dictionary is not a sequence
-        if isinstance(interfaces_dict, collections.Sequence):
-            for interface_dict in interfaces_dict:
-                parse_interface_dict(interface_dict)
-        else:
-            raise NotImplementedError("blabla")
-            parse_interface_dict(interfaces_dict)
+        for interface_dict in interfaces_dict:
+            parse_interface_dict(interface_dict)
 
     def get_interface(self, interface_id):
         """
@@ -259,7 +266,7 @@ class Node(object):
 
     @property
     def gns_coordinates(self):
-        return self.topology.calculate_gns3_coordinates((self.eve_x, self.eve_y))
+        return self.topology.get_gns_coordinates(self.eve_coordinates)
 
     @property
     def gns_image(self):
@@ -280,24 +287,22 @@ class Node(object):
             return self.DEFAULT_LABEL_COORDINATES
 
     @property
-    def symbol(self):
+    def gns_icon(self):
         if self.role == 'switch':
             return ':/symbols/multilayer_switch.svg'
         elif self.role == 'router':
             return ':/symbols/router.svg'
 
     @property
-    def symbol_size(self):
+    def gns_icon_size(self):
         if self.role == 'switch':
             return self.SWITCH_SYMBOL_SIZE
         elif self.role == 'router':
             return self.ROUTER_SYMBOL_SIZE
 
     @property
-    def symbol_center_coordinates(self):
-        gns_x, gns_y = self.gns_coordinates
-        symbol_width, symbol_height = self.symbol_size
-        return gns_x + symbol_width / 2, gns_y + symbol_height
+    def gns_icon_center_coordinates(self):
+        return self.gns_coordinates + self.gns_icon_size / 2
 
     def write_config_to_dir(self, dst_dir):
         """
@@ -318,6 +323,24 @@ class Node(object):
     def build_gns_topology_json(self):
         if self.node_type == 'iol':
             node_json = copy.deepcopy(json_templates.IOL_JSON_TEMPLATE)
+            node_json['properties']['ethernet_adapters'] = self.ethernet_adapters_number
+            node_json['properties']['serial_adapters'] = self.serial_adapters_number
+            node_json['properties']['path'] = self.gns_image
+        elif self.node_type == 'qemu':
+            node_json = copy.deepcopy(json_templates.QEMU_JSON_TEMPLATE)
+            node_json['properties']['adapters'] = self.adapters
+            node_json['properties']['cpus'] = self.cpus
+            node_json['properties']['ram'] = self.ram
+            node_json['properties']['hda_disk_image'] = self.gns_image
+            if self.template == 'vios':
+                node_json['port_name_format'] = 'Gi0/{0}'
+                node_json['properties']['hdb_disk_image'] = 'IOSv_startup_config.img'
+                node_json['properties']['hdb_disk_interface'] = 'virtio'
+            elif self.template == 'viosl2':
+                node_json['port_name_format'] = 'Gi{1}/{0}'
+                node_json['properties']['port_segment_size'] = 4
+            else:
+                node_json['port_name_format'] = 'Gi0/{0}'
         else:
             raise NotImplementedError("There is no template for the node type {self.node_type}")
 
@@ -325,23 +348,20 @@ class Node(object):
         node_json['label']['text'] = self.name
         node_json['name'] = self.name
         node_json['node_id'] = str(self.uuid)
-        node_json['properties']['ethernet_adapters'] = self.ethernet_adapters_number
-        node_json['properties']['serial_adapters'] = self.serial_adapters_number
-        node_json['properties']['path'] = self.gns_image
-        node_json['symbol'] = self.symbol
 
-        gns_x, gns_y = self.gns_coordinates
-        node_json['x'] = gns_x
-        node_json['y'] = gns_y
+        node_json['symbol'] = self.gns_icon
 
-        gns_label_x, gns_label_y = self.gns_label_coordinates
-        node_json['label']['x'] = gns_label_x
-        node_json['label']['y'] = gns_label_y
+        gns_coordinates = self.gns_coordinates
+        node_json['x'] = gns_coordinates.x
+        node_json['y'] = gns_coordinates.y
+        node_json['width'] = self.gns_icon_size.x
+        node_json['height'] = self.gns_icon_size.y
+
+        gns_label_coordinates = self.gns_label_coordinates
+        node_json['label']['x'] = gns_label_coordinates.x
+        node_json['label']['y'] = gns_label_coordinates.y
 
         return node_json
-
-
-
 
 
 class Interface(object):
@@ -361,8 +381,8 @@ class Interface(object):
         return f'Interface(eve_id={self.eve_id}, eve_name={self.eve_name}, node={self.node})'
 
     def get_adapter_port_number(self):
-        if self.node.node_type == 'iol':
-            parsed_values = IOL_INTERFACE_NAME_RE.match(self.eve_name).groupdict()
+        # if self.node.node_type == 'iol':
+            parsed_values = INTERFACE_NAME_RE.match(self.eve_name).groupdict()
             return int(parsed_values['adapter_number']), int(parsed_values['port_number'])
-        else:
-            raise NotImplementedError('This method is valid only for IOL devices')
+        # else:
+        #     raise NotImplementedError('This method is valid only for IOL devices')
