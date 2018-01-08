@@ -162,7 +162,7 @@ class Node(object):
         """
         def parse_interface_dict(int_dict):
             link_type = int_dict['@type']
-            eve_interface_id = int_dict['@id']
+            eve_interface_id = int(int_dict['@id'])
             eve_interface_name = int_dict['@name']
             try:
                 interface = self.get_interface(eve_interface_id)
@@ -177,7 +177,7 @@ class Node(object):
 
                 elif link_type == 'serial':
                     eve_remote_node_id = int_dict['@remote_id']
-                    eve_remote_interface_id = int_dict['@remote_if']
+                    eve_remote_interface_id = int(int_dict['@remote_if'])
                     remote_node = self.topology.id_to_node.get(eve_remote_node_id)
 
                     if remote_node is None:
@@ -381,8 +381,8 @@ class Interface(object):
         return f'Interface(eve_id={self.eve_id}, eve_name={self.eve_name}, node={self.node})'
 
     def get_adapter_port_number(self):
-        # if self.node.node_type == 'iol':
+        if self.node.node_type == 'iol':
             parsed_values = INTERFACE_NAME_RE.match(self.eve_name).groupdict()
             return int(parsed_values['adapter_number']), int(parsed_values['port_number'])
-        # else:
-        #     raise NotImplementedError('This method is valid only for IOL devices')
+        else:
+            raise NotImplementedError('This method is valid only for IOL devices')
