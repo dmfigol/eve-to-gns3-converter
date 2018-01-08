@@ -26,7 +26,7 @@ class Topology(object):
     GNS_SCENE_OFFSET = 200
     GNS_DEFAULT_SCENE_SIZE = Size(2000, 1000)
 
-    def __init__(self, eve_xml=None, args=None, dst_dir=None):
+    def __init__(self, eve_xml, args, dst_dir='/dst'):
         self.uuid = uuid.uuid4()
         self.eve_xml = eve_xml
         self.args = args

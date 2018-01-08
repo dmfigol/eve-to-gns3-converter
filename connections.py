@@ -102,11 +102,11 @@ class Link(object):
         for i, interface in enumerate(self.interfaces):
             node = interface.node
             link_node_json = copy.deepcopy(json_templates.LINK_NODE_JSON_TEMPLATE)
-            adapter_number, port_number = interface.get_adapter_port_number()
             if node.node_type == 'qemu':
-                link_node_json['adapter_number'] = port_number
-                link_node_json['port_number'] = adapter_number
+                link_node_json['adapter_number'] = interface.eve_id
+                link_node_json['port_number'] = 0
             elif node.node_type == 'iol':
+                adapter_number, port_number = interface.get_adapter_port_number()
                 link_node_json['adapter_number'] = adapter_number
                 link_node_json['port_number'] = port_number
             link_node_json['node_id'] = str(node.uuid)
